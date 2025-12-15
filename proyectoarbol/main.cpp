@@ -8,11 +8,11 @@
 #include <iomanip>
 #include <ctime>
 #include <cstdlib>
-#include <random> 
-#include <functional> 
+#include <random>
+#include <functional>
 
-
-#include "json.hpp" 
+// Biblioteca para JSON (asumo que se usa nlohmann/json)
+#include "json.hpp"
 
 using json = nlohmann::json;
 using namespace std;
@@ -21,58 +21,68 @@ using namespace std;
 // 1. ESTRUCTURAS BASE: TipoNodo y Nodo
 // ==============================================
 
+// Enumeración para el tipo de nodo: Carpeta o Archivo
 enum class TipoNodo { Carpeta, Archivo };
 
+/**
+ * @brief Representa un nodo en la jerarquía de archivos (Carpeta o Archivo).
+ * * Este nodo forma la base del árbol.
+ */
 class Nodo {
 public:
     string id;
     string nombre;
     TipoNodo tipo;
-    string contenido; 
-    vector<Nodo*> children;
-    Nodo* parent; 
+    string contenido; // Solo relevante para archivos
+    vector<Nodo*> hijos;
+    Nodo* padre;
 
-    Nodo(string n, TipoNodo t, string c = "") 
-        : nombre(n), tipo(t), contenido(c), parent(nullptr) {
-        
+    // Constructor
+    Nodo(string n, TipoNodo t, string c = "")
+        : nombre(n), tipo(t), contenido(c), padre(nullptr) {
+
+        // Generación de ID aleatorio basado en el nombre, tiempo y un generador Mersenne Twister
         static std::random_device rd;
         static std::mt19937 gen(rd());
-        std::hash<std::string> hasher;
-        
-        size_t hash_val = hasher(nombre) ^ hasher(std::to_string(time(0))) ^ gen();
-        id = std::to_string(hash_val); 
+        std::hash<std::string> hasheador;
+
+        size_t valor_hash = hasheador(nombre) ^ hasheador(std::to_string(time(0))) ^ gen();
+        id = std::to_string(valor_hash);
     }
 
+    // Destructor (libera recursivamente la memoria de los hijos)
     ~Nodo() {
-        for (Nodo* child : children) {
-            delete child;
+        for (Nodo* hijo : hijos) {
+            delete hijo;
         }
     }
 
-    json toJson() const {
+    // Convierte el nodo (y sus hijos) a un objeto JSON
+    json aJson() const {
         json j;
         j["id"] = id;
         j["nombre"] = nombre;
         j["tipo"] = (tipo == TipoNodo::Carpeta ? "carpeta" : "archivo");
         j["contenido"] = contenido;
-        json j_children = json::array();
-        for (const auto& child : children) {
-            j_children.push_back(child->toJson());
+        json j_hijos = json::array();
+        for (const auto& hijo : hijos) {
+            j_hijos.push_back(hijo->aJson());
         }
-        j["children"] = j_children;
+        j["hijos"] = j_hijos;
         return j;
     }
 
-    static Nodo* fromJson(const json& j) {
+    // Crea un nodo (y sus hijos) a partir de un objeto JSON
+    static Nodo* desdeJson(const json& j) {
         TipoNodo tipo = (j["tipo"] == "carpeta" ? TipoNodo::Carpeta : TipoNodo::Archivo);
         Nodo* nodo = new Nodo(j["nombre"], tipo, j.value("contenido", ""));
         nodo->id = j["id"];
-        
-        if (j.contains("children")) {
-            for (const auto& j_child : j["children"]) {
-                Nodo* child = fromJson(j_child);
-                child->parent = nodo;
-                nodo->children.push_back(child);
+
+        if (j.contains("hijos")) {
+            for (const auto& j_hijo : j["hijos"]) {
+                Nodo* hijo = desdeJson(j_hijo);
+                hijo->padre = nodo;
+                nodo->hijos.push_back(hijo);
             }
         }
         return nodo;
@@ -83,82 +93,99 @@ public:
 // 2. ESTRUCTURA AUXILIAR: Trie para Autocompletado
 // ==============================================
 
-class TrieNode {
+/**
+ * @brief Nodo de la estructura de datos Trie (o Prefixtree).
+ */
+class NodoTrie {
 public:
-    map<char, TrieNode*> children;
-    bool isEndOfWord;
-    vector<string> full_names; 
+    map<char, NodoTrie*> hijos;
+    bool esFinDePalabra;
+    vector<string> nombres_completos; // Para manejar duplicados o nombres completos
 
-    TrieNode() : isEndOfWord(false) {}
-    ~TrieNode() {
-        for (auto const& [key, val] : children) delete val;
+    NodoTrie() : esFinDePalabra(false) {}
+    ~NodoTrie() {
+        for (auto const& [clave, valor] : hijos) delete valor;
     }
 };
 
+/**
+ * @brief Implementación de la estructura Trie para búsqueda por prefijo (autocompletado).
+ */
 class Trie {
 private:
-    TrieNode* root;
+    NodoTrie* raiz;
 
-    void findAllWords(TrieNode* node, vector<string>& results) {
-        if (node->isEndOfWord) {
-            results.insert(results.end(), node->full_names.begin(), node->full_names.end());
+    // Función auxiliar recursiva para encontrar todas las palabras desde un nodo
+    void encontrarTodasLasPalabras(NodoTrie* nodo, vector<string>& resultados) {
+        if (nodo->esFinDePalabra) {
+            resultados.insert(resultados.end(), nodo->nombres_completos.begin(), nodo->nombres_completos.end());
         }
-        for (auto const& [key, child] : node->children) {
-            findAllWords(child, results);
+        for (auto const& [clave, hijo] : nodo->hijos) {
+            encontrarTodasLasPalabras(hijo, resultados);
         }
     }
 
 public:
-    Trie() { root = new TrieNode(); }
-    ~Trie() { delete root; }
+    Trie() { raiz = new NodoTrie(); }
+    ~Trie() { delete raiz; }
 
-    void resetAndBuild(Nodo* arbol_root) {
-        delete root;
-        root = new TrieNode();
-        buildTrieHelper(arbol_root);
-    }
-    
-    void buildTrieHelper(Nodo* node) {
-        if (!node) return;
-        if (node->nombre != "/") { 
-            insertWord(node->nombre);
-        }
-        for (Nodo* child : node->children) {
-            buildTrieHelper(child);
-        }
+    // Reinicia y reconstruye el Trie a partir del árbol de jerarquía
+    void reiniciarYConstruir(Nodo* raiz_arbol) {
+        delete raiz;
+        raiz = new NodoTrie();
+        asistenteConstruirTrie(raiz_arbol);
     }
 
-    void insertWord(const string& word) {
-        TrieNode* curr = root;
-        for (char c : word) {
-            if (curr->children.find(c) == curr->children.end()) {
-                curr->children[c] = new TrieNode();
+    // Función auxiliar recursiva para construir el Trie
+    void asistenteConstruirTrie(Nodo* nodo) {
+        if (!nodo) return;
+        // La raíz del sistema de archivos ("/") no se indexa para búsqueda
+        if (nodo->nombre != "/") {
+            insertarPalabra(nodo->nombre);
+        }
+        for (Nodo* hijo : nodo->hijos) {
+            asistenteConstruirTrie(hijo);
+        }
+    }
+
+    // Inserta una palabra (nombre de nodo) en el Trie
+    void insertarPalabra(const string& palabra) {
+        NodoTrie* actual = raiz;
+        for (char c : palabra) {
+            if (actual->hijos.find(c) == actual->hijos.end()) {
+                actual->hijos[c] = new NodoTrie();
             }
-            curr = curr->children[c];
+            actual = actual->hijos[c];
         }
-        curr->isEndOfWord = true;
-        
-        if (std::find(curr->full_names.begin(), curr->full_names.end(), word) == curr->full_names.end()) {
-             curr->full_names.push_back(word);
+        actual->esFinDePalabra = true;
+
+        // Agregar el nombre completo para manejar posibles duplicados de nombres
+        if (std::find(actual->nombres_completos.begin(), actual->nombres_completos.end(), palabra) == actual->nombres_completos.end()) {
+             actual->nombres_completos.push_back(palabra);
         }
     }
 
-    vector<string> autocomplete(const string& prefix) {
-        TrieNode* curr = root;
-        vector<string> results;
+    // Realiza la búsqueda por prefijo y autocompleta
+    vector<string> autocompletar(const string& prefijo) {
+        NodoTrie* actual = raiz;
+        vector<string> resultados;
 
-        for (char c : prefix) {
-            if (curr->children.find(c) == curr->children.end()) {
-                return results; 
+        // Recorrer hasta el final del prefijo
+        for (char c : prefijo) {
+            if (actual->hijos.find(c) == actual->hijos.end()) {
+                return resultados; // No hay coincidencias
             }
-            curr = curr->children[c];
+            actual = actual->hijos[c];
         }
-        
-        findAllWords(curr, results);
-        std::sort(results.begin(), results.end());
-        results.erase(std::unique(results.begin(), results.end()), results.end());
-        
-        return results;
+
+        // Encontrar todas las palabras completas desde este punto
+        encontrarTodasLasPalabras(actual, resultados);
+
+        // Limpiar duplicados y ordenar los resultados
+        std::sort(resultados.begin(), resultados.end());
+        resultados.erase(std::unique(resultados.begin(), resultados.end()), resultados.end());
+
+        return resultados;
     }
 };
 
@@ -166,246 +193,294 @@ public:
 // 3. ESTRUCTURA PRINCIPAL: ArbolJerarquia
 // ==============================================
 
+/**
+ * @brief Clase principal que gestiona la estructura de árbol de jerarquía de archivos/carpetas.
+ * * Incluye índices de búsqueda (Trie para prefijo, Map para exacto) para un acceso rápido.
+ */
 class ArbolJerarquia {
 private:
-    Nodo* root;
-    Trie name_trie; 
-    map<string, Nodo*> hash_map_busqueda; 
+    Nodo* raiz;
+    Trie trie_nombres;
+    map<string, Nodo*> mapa_busqueda_exacta; // Hash Map para búsqueda exacta por nombre
 
     // --- Funciones Auxiliares Privadas ---
-    
-    Nodo* findNodeByPath(const string& path) {
-        if (path == "/" || path.empty()) return root;
 
-        string p = path;
-        if (p.front() == '/') p.erase(0, 1);
-        if (p.empty()) return root;
+    // Encuentra un nodo dado su ruta completa (ej: "/docs/reporte.txt")
+    Nodo* encontrarNodoPorRuta(const string& ruta) {
+        if (ruta == "/" || ruta.empty()) return raiz;
 
-        stringstream ss(p);
-        string segment;
-        Nodo* current = root;
+        string r = ruta;
+        if (r.front() == '/') r.erase(0, 1); // Quitar '/' inicial
+        if (r.empty()) return raiz;
 
-        while (getline(ss, segment, '/')) {
-            if (segment.empty()) continue; 
-            bool found = false;
-            for (Nodo* child : current->children) {
-                if (child->nombre == segment) {
-                    current = child;
-                    found = true;
+        stringstream ss(r);
+        string segmento;
+        Nodo* actual = raiz;
+
+        // Recorrer la ruta, segmento por segmento
+        while (getline(ss, segmento, '/')) {
+            if (segmento.empty()) continue;
+            bool encontrado = false;
+            for (Nodo* hijo : actual->hijos) {
+                if (hijo->nombre == segmento) {
+                    actual = hijo;
+                    encontrado = true;
                     break;
                 }
             }
-            if (!found) return nullptr;
+            if (!encontrado) return nullptr; // Segmento de ruta no existe
         }
-        return current;
+        return actual;
     }
 
-    void preordenHelper(Nodo* node, vector<string>& result) {
-        if (!node) return;
-        string tipo_str = (node->tipo == TipoNodo::Carpeta ? "C" : "A");
-        string path = mostrarRuta(node);
-        result.push_back("[" + tipo_str + "] " + path);
-        for (Nodo* child : node->children) {
-            preordenHelper(child, result);
+    // Función auxiliar para el recorrido en preorden
+    void asistentePreorden(Nodo* nodo, vector<string>& resultado) {
+        if (!nodo) return;
+        string tipo_str = (nodo->tipo == TipoNodo::Carpeta ? "C" : "A");
+        string ruta = mostrarRuta(nodo);
+        resultado.push_back("[" + tipo_str + "] " + ruta);
+        for (Nodo* hijo : nodo->hijos) {
+            asistentePreorden(hijo, resultado);
         }
     }
-    
-    // Reconstruccion completa de indices (usada tras load, rename o movimiento complejo)
-    void rebuildIndices() {
-        hash_map_busqueda.clear();
-        name_trie.resetAndBuild(root); 
 
-        function<void(Nodo*)> updateHash = 
-            [&](Nodo* node) {
-            if (!node) return;
-            if (node->nombre != "/") { 
-                hash_map_busqueda[node->nombre] = node; 
+    // Reconstrucción completa de los índices de búsqueda (usada tras load, rename o movimiento complejo)
+    void reconstruirIndices() {
+        mapa_busqueda_exacta.clear();
+        trie_nombres.reiniciarYConstruir(raiz);
+
+        // Función lambda recursiva para actualizar el mapa de hash
+        function<void(Nodo*)> actualizarHash =
+            [&](Nodo* nodo) {
+            if (!nodo) return;
+            if (nodo->nombre != "/") { // No indexar la raíz
+                mapa_busqueda_exacta[nodo->nombre] = nodo;
             }
-            for (Nodo* child : node->children) {
-                updateHash(child);
+            for (Nodo* hijo : nodo->hijos) {
+                actualizarHash(hijo);
             }
         };
-        updateHash(root);
+        actualizarHash(raiz);
         cout << "Indices (Trie y Hash Map) reconstruidos." << endl;
     }
-    
-    void removeHashEntry(const string& name) {
-        hash_map_busqueda.erase(name);
+
+    // Remueve una entrada del Hash Map
+    void removerEntradaHash(const string& nombre) {
+        mapa_busqueda_exacta.erase(nombre);
     }
-    
-    void insertHashEntry(Nodo* node) {
-        if (node->nombre != "/") {
-            hash_map_busqueda[node->nombre] = node;
+
+    // Inserta un nodo en el Hash Map
+    void insertarEntradaHash(Nodo* nodo) {
+        if (nodo->nombre != "/") {
+            mapa_busqueda_exacta[nodo->nombre] = nodo;
         }
     }
 
 public:
+    // Constructor
     ArbolJerarquia() {
-        root = new Nodo("/", TipoNodo::Carpeta); 
-        rebuildIndices();
+        raiz = new Nodo("/", TipoNodo::Carpeta);
+        reconstruirIndices();
     }
 
+    // Destructor
     ~ArbolJerarquia() {
-        delete root;
+        delete raiz;
     }
 
     // --- Operaciones CRUD y Persistencia ---
 
-    bool crearNodo(const string& parent_path, const string& nombre, TipoNodo tipo, const string& contenido = "") {
-        Nodo* parent = findNodeByPath(parent_path);
-        if (!parent || parent->tipo != TipoNodo::Carpeta) {
-            cerr << "Error: Ruta padre '" << parent_path << "' no encontrada o no es una carpeta." << endl;
+    /**
+     * @brief Crea un nuevo nodo (Carpeta o Archivo) en la ruta padre especificada.
+     */
+    bool crearNodo(const string& ruta_padre, const string& nombre, TipoNodo tipo, const string& contenido = "") {
+        Nodo* padre = encontrarNodoPorRuta(ruta_padre);
+        if (!padre || padre->tipo != TipoNodo::Carpeta) {
+            cerr << "Error: Ruta padre '" << ruta_padre << "' no encontrada o no es una carpeta." << endl;
             return false;
         }
 
-        for (Nodo* child : parent->children) {
-            if (child->nombre == nombre) {
+        // Verificar si ya existe un nodo con ese nombre en el padre
+        for (Nodo* hijo : padre->hijos) {
+            if (hijo->nombre == nombre) {
                 cerr << "Error: Ya existe un nodo con el nombre '" << nombre << "' en esta ruta." << endl;
                 return false;
             }
         }
 
-        Nodo* newNode = new Nodo(nombre, tipo, contenido);
-        newNode->parent = parent;
-        parent->children.push_back(newNode);
-        
-        name_trie.insertWord(newNode->nombre);
-        insertHashEntry(newNode);
-        
-        cout << (tipo == TipoNodo::Carpeta ? "Carpeta" : "Archivo") << " '" << nombre << "' creado en " << parent_path << endl;
+        Nodo* nuevoNodo = new Nodo(nombre, tipo, contenido);
+        nuevoNodo->padre = padre;
+        padre->hijos.push_back(nuevoNodo);
+
+        // Actualizar índices
+        trie_nombres.insertarPalabra(nuevoNodo->nombre);
+        insertarEntradaHash(nuevoNodo);
+
+        cout << (tipo == TipoNodo::Carpeta ? "Carpeta" : "Archivo") << " '" << nombre << "' creado en " << ruta_padre << endl;
         return true;
     }
 
-    bool renombrarNodo(const string& path, const string& nuevo_nombre) {
-        Nodo* node = findNodeByPath(path);
-        if (!node || node == root) {
+    /**
+     * @brief Renombra un nodo.
+     */
+    bool renombrarNodo(const string& ruta, const string& nuevo_nombre) {
+        Nodo* nodo = encontrarNodoPorRuta(ruta);
+        if (!nodo || nodo == raiz) {
             cerr << "Error: Nodo no encontrado o es la raiz ('/')." << endl;
             return false;
         }
-        
-        string old_name = node->nombre;
-        
-        for (Nodo* sibling : node->parent->children) {
-            if (sibling != node && sibling->nombre == nuevo_nombre) {
+
+        string nombre_anterior = nodo->nombre;
+
+        // Verificar si un hermano ya tiene el nuevo nombre
+        for (Nodo* hermano : nodo->padre->hijos) {
+            if (hermano != nodo && hermano->nombre == nuevo_nombre) {
                 cerr << "Error: Ya existe un nodo con el nombre '" << nuevo_nombre << "' en este directorio." << endl;
                 return false;
             }
         }
-        
-        node->nombre = nuevo_nombre;
-        rebuildIndices();
-        
-        cout << "Nodo '" << old_name << "' renombrado a '" << nuevo_nombre << "'." << endl;
+
+        nodo->nombre = nuevo_nombre;
+        // Se requiere reconstrucción completa de índices por el cambio de nombre
+        reconstruirIndices();
+
+        cout << "Nodo '" << nombre_anterior << "' renombrado a '" << nuevo_nombre << "'." << endl;
         return true;
     }
 
-    bool eliminarNodo(const string& path, vector<Nodo*>& papelera) {
-        Nodo* node = findNodeByPath(path);
-        if (!node || node == root || !node->parent) {
+    /**
+     * @brief Elimina un nodo (lo mueve a una 'papelera' temporal en memoria).
+     */
+    bool eliminarNodo(const string& ruta, vector<Nodo*>& papelera) {
+        Nodo* nodo = encontrarNodoPorRuta(ruta);
+        if (!nodo || nodo == raiz || !nodo->padre) {
             cerr << "Error: Nodo no encontrado o es la raiz ('/')." << endl;
             return false;
         }
 
-        Nodo* parent = node->parent;
-        auto& children = parent->children;
-        
-        auto it = std::remove_if(children.begin(), children.end(), 
-            [&](Nodo* n) { return n == node; });
+        Nodo* padre = nodo->padre;
+        auto& hijos_padre = padre->hijos;
 
-        if (it != children.end()) {
-            children.erase(it, children.end());
-            papelera.push_back(node); 
-            node->parent = nullptr; 
-            
-            rebuildIndices();
-            
-            cout << "Nodo '" << node->nombre << "' movido a la papelera (puntero guardado)." << endl;
+        // Eliminar el puntero del vector de hijos del padre
+        auto it = std::remove_if(hijos_padre.begin(), hijos_padre.end(),
+            [&](Nodo* n) { return n == nodo; });
+
+        if (it != hijos_padre.end()) {
+            hijos_padre.erase(it, hijos_padre.end());
+
+            // Mover a la papelera (se transfiere la propiedad del puntero)
+            papelera.push_back(nodo);
+            nodo->padre = nullptr; // Desvincular del árbol
+
+            // Reconstrucción completa de índices ya que un subárbol completo podría haberse eliminado lógicamente
+            reconstruirIndices();
+
+            cout << "Nodo '" << nodo->nombre << "' movido a la papelera (puntero guardado)." << endl;
             return true;
         }
         return false;
     }
 
-    bool moverNodo(const string& src_path, const string& dest_path) {
-        Nodo* src_node = findNodeByPath(src_path);
-        Nodo* dest_parent = findNodeByPath(dest_path);
+    /**
+     * @brief Mueve un nodo de una ruta a otra.
+     */
+    bool moverNodo(const string& ruta_origen, const string& ruta_destino) {
+        Nodo* nodo_origen = encontrarNodoPorRuta(ruta_origen);
+        Nodo* padre_destino = encontrarNodoPorRuta(ruta_destino);
 
-        if (!src_node || src_node == root) {
+        if (!nodo_origen || nodo_origen == raiz) {
             cerr << "Error: Nodo de origen no encontrado o es la raiz." << endl;
             return false;
         }
-        if (!dest_parent || dest_parent->tipo != TipoNodo::Carpeta) {
+        if (!padre_destino || padre_destino->tipo != TipoNodo::Carpeta) {
             cerr << "Error: Destino no encontrado o no es una carpeta." << endl;
             return false;
         }
 
-        Nodo* temp = dest_parent;
+        // Evitar mover un nodo a su propio subdirectorio
+        Nodo* temp = padre_destino;
         while (temp) {
-            if (temp == src_node) {
+            if (temp == nodo_origen) {
                 cerr << "Error: No se puede mover una carpeta a un subdirectorio propio." << endl;
                 return false;
             }
-            temp = temp->parent;
+            temp = temp->padre;
         }
-        
-        Nodo* current_parent = src_node->parent;
-        auto& current_children = current_parent->children;
-        current_children.erase(
-            std::remove(current_children.begin(), current_children.end(), src_node),
-            current_children.end()
+
+        // 1. Eliminar de la lista de hijos del padre actual
+        Nodo* padre_actual = nodo_origen->padre;
+        auto& hijos_actuales = padre_actual->hijos;
+        hijos_actuales.erase(
+            std::remove(hijos_actuales.begin(), hijos_actuales.end(), nodo_origen),
+            hijos_actuales.end()
         );
 
-        src_node->parent = dest_parent;
-        dest_parent->children.push_back(src_node);
-        
-        rebuildIndices();
-        
-        cout << "Nodo '" << src_node->nombre << "' movido a " << dest_path << endl;
+        // 2. Insertar en la lista de hijos del nuevo padre
+        nodo_origen->padre = padre_destino;
+        padre_destino->hijos.push_back(nodo_origen);
+
+        // Reconstrucción completa de índices por si el movimiento alteró la unicidad de nombres
+        reconstruirIndices();
+
+        cout << "Nodo '" << nodo_origen->nombre << "' movido a " << ruta_destino << endl;
         return true;
     }
 
-    void listarHijos(const string& path) {
-        Nodo* node = findNodeByPath(path);
-        if (!node || node->tipo != TipoNodo::Carpeta) {
-            cerr << "Error: Ruta '" << path << "' no encontrada o no es una carpeta." << endl;
+    /**
+     * @brief Lista los hijos directos de un nodo (como el comando 'ls').
+     */
+    void listarHijos(const string& ruta) {
+        Nodo* nodo = encontrarNodoPorRuta(ruta);
+        if (!nodo || nodo->tipo != TipoNodo::Carpeta) {
+            cerr << "Error: Ruta '" << ruta << "' no encontrada o no es una carpeta." << endl;
             return;
         }
 
-        cout << "\nContenido de '" << path << "':" << endl;
-        for (Nodo* child : node->children) {
-            string tipo_str = (child->tipo == TipoNodo::Carpeta ? "DIR" : "FIL");
-            cout << "[" << tipo_str << "] " << child->nombre << endl;
+        cout << "\nContenido de '" << ruta << "':" << endl;
+        for (Nodo* hijo : nodo->hijos) {
+            string tipo_str = (hijo->tipo == TipoNodo::Carpeta ? "DIR" : "FIL");
+            cout << "[" << tipo_str << "] " << hijo->nombre << endl;
         }
-        if (node->children.empty()) {
+        if (nodo->hijos.empty()) {
             cout << "(Vacio)" << endl;
         }
     }
 
-    string mostrarRuta(Nodo* node) {
-        if (!node) return "ERROR_NULO";
-        if (node == root) return "/";
+    /**
+     * @brief Muestra la ruta completa del nodo.
+     */
+    string mostrarRuta(Nodo* nodo) {
+        if (!nodo) return "ERROR_NULO";
+        if (nodo == raiz) return "/";
 
-        string path = node->nombre;
-        Nodo* current = node->parent;
-        while (current && current != root) {
-            path = current->nombre + "/" + path;
-            current = current->parent;
+        string ruta = nodo->nombre;
+        Nodo* actual = nodo->padre;
+        while (actual && actual != raiz) {
+            ruta = actual->nombre + "/" + ruta;
+            actual = actual->padre;
         }
-        return "/" + path;
+        return "/" + ruta;
     }
 
+    /**
+     * @brief Devuelve la lista de nodos en el recorrido Preorden.
+     */
     vector<string> exportarPreorden() {
-        vector<string> result;
-        preordenHelper(root, result);
-        return result;
+        vector<string> resultado;
+        asistentePreorden(raiz, resultado);
+        return resultado;
     }
 
-    bool guardar(const string& filename = "jerarquia.json") {
+    /**
+     * @brief Guarda el árbol en un archivo JSON.
+     */
+    bool guardar(const string& nombre_archivo = "jerarquia.json") {
         try {
-            json j = root->toJson();
-            ofstream o(filename);
+            json j = raiz->aJson();
+            ofstream o(nombre_archivo);
             o << setw(4) << j << endl;
             o.close();
-            cout << "Arbol guardado con exito en " << filename << endl;
+            cout << "Arbol guardado con exito en " << nombre_archivo << endl;
             return true;
         } catch (const exception& e) {
             cerr << "Error al guardar el JSON: " << e.what() << endl;
@@ -413,155 +488,182 @@ public:
         }
     }
 
-    bool cargar(const string& filename = "jerarquia.json") {
+    /**
+     * @brief Carga el árbol desde un archivo JSON.
+     */
+    bool cargar(const string& nombre_archivo = "jerarquia.json") {
         try {
-            ifstream i(filename);
+            ifstream i(nombre_archivo);
             if (!i.is_open()) {
-                cerr << "Advertencia: Archivo " << filename << " no encontrado. Iniciando con arbol raiz vacio." << endl;
-                return false; 
+                cerr << "Advertencia: Archivo " << nombre_archivo << " no encontrado. Iniciando con arbol raiz vacio." << endl;
+                return false;
             }
 
             json j;
             i >> j;
             i.close();
 
-            delete root; 
-            root = Nodo::fromJson(j);
-            
-            rebuildIndices(); 
-            
-            cout << "Arbol cargado con exito desde " << filename << endl;
+            // Eliminar el árbol anterior antes de cargar el nuevo
+            delete raiz;
+            raiz = Nodo::desdeJson(j);
+
+            // Reconstruir los índices de búsqueda
+            reconstruirIndices();
+
+            cout << "Arbol cargado con exito desde " << nombre_archivo << endl;
             return true;
         } catch (const exception& e) {
             cerr << "Error al cargar/parsear el JSON: " << e.what() << endl;
-            root = new Nodo("/", TipoNodo::Carpeta);
-            rebuildIndices();
+            // Si falla, inicializar un árbol vacío para evitar un estado inconsistente
+            raiz = new Nodo("/", TipoNodo::Carpeta);
+            reconstruirIndices();
             return false;
         }
     }
 
-    // --- Metodos de Busqueda Publicos ---
+    // --- Métodos de Búsqueda Públicos ---
 
-    vector<string> buscarPorPrefijo(const string& prefix) {
-        return name_trie.autocomplete(prefix);
+    /**
+     * @brief Realiza autocompletado usando el Trie.
+     */
+    vector<string> buscarPorPrefijo(const string& prefijo) {
+        return trie_nombres.autocompletar(prefijo);
     }
 
-    Nodo* buscarExacto(const string& name) {
-        if (hash_map_busqueda.count(name)) {
-            return hash_map_busqueda[name];
+    /**
+     * @brief Busca un nodo por nombre exacto usando el Hash Map.
+     * * Nota: Esto puede devolver un nodo si hay nombres duplicados en diferentes rutas.
+     */
+    Nodo* buscarExacto(const string& nombre) {
+        if (mapa_busqueda_exacta.count(nombre)) {
+            return mapa_busqueda_exacta[nombre];
         }
         return nullptr;
     }
 };
 
 // ==============================================
-// 4. INTERFAZ DE CONSOLA Y FUNCION MAIN
+// 4. INTERFAZ DE CONSOLA Y FUNCION PRINCIPAL
 // ==============================================
 
 ArbolJerarquia arbol;
-vector<Nodo*> papelera; 
+vector<Nodo*> papelera; // Papelera de reciclaje temporal
 
 void mostrarMenu() {
     cout << "\n" << string(50, '=') << endl;
     cout << "  MINI-SUITE DE GESTION DE ARCHIVOS (ARBOLES)" << endl;
     cout << string(50, '=') << endl;
     cout << "Comandos:" << endl;
-    cout << "  - mkdir <ruta_padre> <nombre_carpeta>  (Crear Carpeta)" << endl;
+    cout << "  - mkdir <ruta_padre> <nombre_carpeta>    (Crear Carpeta)" << endl;
     cout << "  - touch <ruta_padre> <nombre_archivo> [contenido] (Crear Archivo)" << endl;
-    cout << "  - mv <ruta_origen> <ruta_destino>      (Mover Nodo)" << endl;
-    cout << "  - rm <ruta>                           (Eliminar a Papelera)" << endl;
-    cout << "  - ls <ruta>                           (Listar Hijos)" << endl;
-    cout << "  - rename <ruta> <nuevo_nombre>        (Renombrar Nodo)" << endl;
-    cout << "  - search <prefijo_o_nombre>           (Busqueda/Autocompletado)" << endl;
-    cout << "  - export preorden                     (Exportar Recorrido)" << endl;
-    cout << "  - save / load                         (Persistencia JSON)" << endl;
+    cout << "  - mv <ruta_origen> <ruta_destino>        (Mover Nodo)" << endl;
+    cout << "  - rm <ruta>                              (Eliminar a Papelera)" << endl;
+    cout << "  - ls <ruta>                              (Listar Hijos)" << endl;
+    cout << "  - rename <ruta> <nuevo_nombre>           (Renombrar Nodo)" << endl;
+    cout << "  - search <prefijo_o_nombre>              (Busqueda/Autocompletado: Trie y Hash)" << endl;
+    cout << "  - export preorden                        (Exportar Recorrido)" << endl;
+    cout << "  - save / load                            (Persistencia JSON)" << endl;
     cout << "  - help / exit" << endl;
     cout << string(50, '=') << endl;
 }
 
 int main() {
-    srand(time(0)); 
-    arbol.cargar(); 
+    // Inicializar el generador de números pseudoaleatorios
+    srand(time(0));
+
+    // Intentar cargar el árbol al inicio
+    arbol.cargar();
     mostrarMenu();
-    
-    string line;
+
+    string linea;
     while (true) {
         cout << "\n> ";
-        if (!getline(cin, line)) break; 
-        
-        stringstream ss(line);
-        string command, arg1, arg2, arg3;
+        // Leer la línea completa del comando
+        if (!getline(cin, linea)) break;
 
-        ss >> command;
+        stringstream ss(linea);
+        string comando, arg1, arg2, arg3;
 
-        if (command == "exit") {
+        // Extraer el comando
+        ss >> comando;
+
+        if (comando == "exit") {
             cout << "Saliendo. No olvides hacer 'save'!" << endl;
+            // Limpiar la papelera de reciclaje al salir (liberar memoria)
+            for (Nodo* nodo_borrado : papelera) {
+                delete nodo_borrado;
+            }
+            papelera.clear();
             break;
-        } else if (command == "help") {
+        } else if (comando == "help") {
             mostrarMenu();
-        } else if (command == "save") {
+        } else if (comando == "save") {
             arbol.guardar();
-        } else if (command == "load") {
+        } else if (comando == "load") {
             arbol.cargar();
-        } else if (command == "mkdir") {
+        } else if (comando == "mkdir") {
             ss >> arg1 >> arg2;
             if (!arg1.empty() && !arg2.empty()) {
                 arbol.crearNodo(arg1, arg2, TipoNodo::Carpeta);
             } else { cout << "Uso: mkdir <ruta_padre> <nombre_carpeta>" << endl; }
-        } else if (command == "touch") {
+        } else if (comando == "touch") {
             ss >> arg1 >> arg2;
-            string content;
-            if (ss >> arg3) { 
-                content = arg3;
+            string contenido;
+            // Recoger todo el resto de la línea como contenido
+            if (ss >> arg3) {
+                contenido = arg3;
                 string temp;
-                while (ss >> temp) content += " " + temp;
+                while (ss >> temp) contenido += " " + temp;
             }
             if (!arg1.empty() && !arg2.empty()) {
-                arbol.crearNodo(arg1, arg2, TipoNodo::Archivo, content);
+                arbol.crearNodo(arg1, arg2, TipoNodo::Archivo, contenido);
             } else { cout << "Uso: touch <ruta_padre> <nombre_archivo> [contenido]" << endl; }
-        } else if (command == "ls") {
+        } else if (comando == "ls") {
             ss >> arg1;
             arbol.listarHijos(arg1.empty() ? "/" : arg1);
-        } else if (command == "rename") {
+        } else if (comando == "rename") {
             ss >> arg1 >> arg2;
             if (!arg1.empty() && !arg2.empty()) {
                 arbol.renombrarNodo(arg1, arg2);
             } else { cout << "Uso: rename <ruta> <nuevo_nombre>" << endl; }
-        } else if (command == "rm") {
+        } else if (comando == "rm") {
             ss >> arg1;
             if (!arg1.empty()) {
                  arbol.eliminarNodo(arg1, papelera);
             } else { cout << "Uso: rm <ruta>" << endl; }
-        } else if (command == "mv") {
+        } else if (comando == "mv") {
             ss >> arg1 >> arg2;
             if (!arg1.empty() && !arg2.empty()) {
                 arbol.moverNodo(arg1, arg2);
             } else { cout << "Uso: mv <ruta_origen> <ruta_destino>" << endl; }
-        } else if (command == "search") {
+        } else if (comando == "search") {
             ss >> arg1;
             if (!arg1.empty()) {
-                Nodo* found = arbol.buscarExacto(arg1);
-                bool hash_found = (found != nullptr);
+                Nodo* encontrado = arbol.buscarExacto(arg1);
+                bool encontrado_hash = (encontrado != nullptr);
 
-                if (hash_found) {
+                if (encontrado_hash) {
                     cout << "\n[OK] Coincidencia exacta (Hash Map) con nombre '" << arg1 << "':" << endl;
-                    cout << "  - Tipo: " << (found->tipo == TipoNodo::Carpeta ? "Carpeta" : "Archivo") << endl;
-                    cout << "  - Ruta: " << arbol.mostrarRuta(found) << endl;
+                    cout << "  - Tipo: " << (encontrado->tipo == TipoNodo::Carpeta ? "Carpeta" : "Archivo") << endl;
+                    cout << "  - Ruta: " << arbol.mostrarRuta(encontrado) << endl;
                 }
 
-                vector<string> results = arbol.buscarPorPrefijo(arg1);
-                if (!results.empty()) {
+                vector<string> resultados = arbol.buscarPorPrefijo(arg1);
+                if (!resultados.empty()) {
                     cout << "\n[STAR] Autocompletado por prefijo ('" << arg1 << "'):" << endl;
-                    for (const string& result : results) {
-                        cout << "  - " << result << endl;
+                    for (const string& resultado : resultados) {
+                        cout << "  - " << resultado << endl;
                     }
-                } else if (!hash_found) {
+                } else if (!encontrado_hash) {
                     cout << "\n[FAIL] No se encontraron coincidencias." << endl;
                 }
             } else { cout << "Uso: search <prefijo_o_nombre>" << endl; }
-        } else if (command == "export" && (ss >> arg1) && arg1 == "preorden") {
+        } else if (comando == "export" && (ss >> arg1) && arg1 == "preorden") {
             vector<string> recorrido = arbol.exportarPreorden();
             cout << "\nRecorrido en Preorden:" << endl;
+            // El recorrido en preorden visita la raíz, luego los hijos de izquierda a derecha.
+            // Es un buen método para ver la estructura jerárquica del árbol.
+            //
             for (const string& s : recorrido) {
                 cout << s << endl;
             }
